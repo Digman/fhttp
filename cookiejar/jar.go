@@ -6,10 +6,12 @@
 package cookiejar
 
 import (
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -503,4 +505,30 @@ func (j *Jar) domainAndType(host, domain string) (string, bool, error) {
 	}
 
 	return domain, false, nil
+}
+
+// Persist Save cookies to file
+func (j *Jar) Persist(filename string) error {
+	fd, err := os.Create(filename)
+	if err == nil {
+		j.mu.Lock()
+		defer fd.Close()
+		defer j.mu.Unlock()
+		err = gob.NewEncoder(fd).Encode(j.entries)
+	}
+	return err
+}
+
+// Load Get cookies from file
+func (j *Jar) Load(filename string) error {
+	fd, err := os.Open(filename)
+	if err == nil {
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		defer fd.Close()
+		err = gob.NewDecoder(fd).Decode(&j.entries)
+	} else if os.IsNotExist(err) {
+		err = nil
+	}
+	return err
 }
