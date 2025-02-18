@@ -357,7 +357,8 @@ type ClientConn struct {
 	wantSettingsAck bool                 // we sent a SETTINGS frame and haven't heard back
 	werr            error                // first write error that has occurred
 
-	wmu sync.Mutex // held while writing; acquire AFTER mu if holding both
+	wmu     sync.Mutex // held while writing; acquire AFTER mu if holding both
+	bufPool sync.Pool  // frame buffer pool
 }
 
 // clientStream is the state for a single HTTP/2 stream. One of these
@@ -1092,36 +1093,44 @@ func (cc *ClientConn) closeForLostPing() error {
 
 const maxAllocFrameSize = 512 << 10
 
-// Pre-allocate the maximum buffer that may be needed
-var frameBufferPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, maxAllocFrameSize)
-	},
-}
-
 // frameBuffer returns a scratch buffer suitable for writing DATA frames.
 // They're capped at the min of the peer's max frame size or 512KB
 // (kinda arbitrarily), but definitely capped so we don't allocate 4GB
 // buffers.
 func (cc *ClientConn) frameScratchBuffer() []byte {
+	cc.mu.Lock()
 	size := cc.maxFrameSize
 	if size > maxAllocFrameSize {
 		size = maxAllocFrameSize
 	}
+	cc.mu.Unlock()
 
-	buf := frameBufferPool.Get().([]byte)
-	if cap(buf) < int(size) {
-		buf = make([]byte, size)
-	} else {
-		buf = buf[:size]
+	if buf := cc.bufPool.Get(); buf != nil {
+		b := buf.([]byte)
+		if cap(b) >= int(size) {
+			return b[:size]
+		}
+		cc.bufPool.Put(b)
 	}
-	return buf
+	return make([]byte, size)
 }
 
 func (cc *ClientConn) putFrameScratchBuffer(buf []byte) {
-	// reset buffers
-	buf = buf[:0]
-	frameBufferPool.Put(buf)
+	// restore buffer cap
+	buf = buf[:cap(buf)]
+
+	cc.mu.Lock()
+	currentMax := cc.maxFrameSize
+	if currentMax > maxAllocFrameSize {
+		currentMax = maxAllocFrameSize
+	}
+	cc.mu.Unlock()
+
+	if cap(buf) > int(currentMax) {
+		return
+	}
+
+	cc.bufPool.Put(buf)
 }
 
 // errRequestCanceled is a copy of net/http's errRequestCanceled because it's not
