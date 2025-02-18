@@ -1119,6 +1119,8 @@ func (cc *ClientConn) frameScratchBuffer() []byte {
 }
 
 func (cc *ClientConn) putFrameScratchBuffer(buf []byte) {
+	// reset buffers
+	buf = buf[:0]
 	frameBufferPool.Put(buf)
 }
 
