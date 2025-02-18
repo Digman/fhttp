@@ -1091,7 +1091,7 @@ func (cc *ClientConn) closeForLostPing() error {
 	return cc.closeForError(err)
 }
 
-const maxAllocFrameSize = 256 << 10
+const maxAllocFrameSize = 512 << 10
 
 // frameBuffer returns a scratch buffer suitable for writing DATA frames.
 // They're capped at the min of the peer's max frame size or 512KB
