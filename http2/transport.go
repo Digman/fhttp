@@ -816,7 +816,7 @@ func (t *Transport) newClientConn(c net.Conn, addr string, singleUse bool) (*Cli
 		pushEnabled = 1
 	}
 
-	//setMaxHeader := false
+	// setMaxHeader := false
 	if t.Settings != nil {
 		// we need to iterate over the slice here not the map because of the random range over a map
 		for _, settingId := range t.SettingsOrder {
@@ -1092,46 +1092,33 @@ func (cc *ClientConn) closeForLostPing() error {
 
 const maxAllocFrameSize = 512 << 10
 
+var frameBufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, maxAllocFrameSize)
+	},
+}
+
 // frameBuffer returns a scratch buffer suitable for writing DATA frames.
 // They're capped at the min of the peer's max frame size or 512KB
 // (kinda arbitrarily), but definitely capped so we don't allocate 4GB
-// bufers.
+// buffers.
 func (cc *ClientConn) frameScratchBuffer() []byte {
-	cc.mu.Lock()
 	size := cc.maxFrameSize
 	if size > maxAllocFrameSize {
 		size = maxAllocFrameSize
 	}
-	for i, buf := range cc.freeBuf {
-		if len(buf) >= int(size) {
-			cc.freeBuf[i] = nil
-			cc.mu.Unlock()
 
-			return buf[:size]
-		}
+	buf := frameBufferPool.Get().([]byte)
+	if cap(buf) < int(size) {
+		buf = make([]byte, size)
+	} else {
+		buf = buf[:size]
 	}
-	cc.mu.Unlock()
-
-	return make([]byte, size)
+	return buf
 }
 
 func (cc *ClientConn) putFrameScratchBuffer(buf []byte) {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	const maxBufs = 4 // arbitrary; 4 concurrent requests per conn? investigate.
-	if len(cc.freeBuf) < maxBufs {
-		cc.freeBuf = append(cc.freeBuf, buf)
-
-		return
-	}
-	for i, old := range cc.freeBuf {
-		if old == nil {
-			cc.freeBuf[i] = buf
-
-			return
-		}
-	}
-	// forget about it.
+	frameBufferPool.Put(buf)
 }
 
 // errRequestCanceled is a copy of net/http's errRequestCanceled because it's not
