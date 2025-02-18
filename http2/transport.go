@@ -358,8 +358,6 @@ type ClientConn struct {
 	werr            error                // first write error that has occurred
 
 	wmu sync.Mutex // held while writing; acquire AFTER mu if holding both
-
-	framePool sync.Pool // frame buffer pool
 }
 
 // clientStream is the state for a single HTTP/2 stream. One of these
@@ -787,7 +785,6 @@ func (t *Transport) newClientConn(c net.Conn, addr string, singleUse bool) (*Cli
 	cc.bw = bufio.NewWriter(stickyErrWriter{&cc.werr, c})
 	cc.br = bufio.NewReader(c)
 	cc.fr = NewFramer(cc.bw, cc.br)
-	cc.initFrameBufferPool()
 
 	customHeaderTableSize, ok := t.Settings[SettingHeaderTableSize]
 
@@ -1095,16 +1092,11 @@ func (cc *ClientConn) closeForLostPing() error {
 
 const maxAllocFrameSize = 512 << 10
 
-// init frame buffer pool
-func (cc *ClientConn) initFrameBufferPool() {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-
-	cc.framePool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, maxAllocFrameSize)
-		},
-	}
+// Pre-allocate the maximum buffer that may be needed
+var frameBufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, maxAllocFrameSize)
+	},
 }
 
 // frameBuffer returns a scratch buffer suitable for writing DATA frames.
@@ -1117,20 +1109,17 @@ func (cc *ClientConn) frameScratchBuffer() []byte {
 		size = maxAllocFrameSize
 	}
 
-	if buf := cc.framePool.Get(); buf != nil {
-		b := buf.([]byte)
-		if cap(b) >= int(size) {
-			return b[:size]
-		}
-		cc.framePool.Put(buf)
+	buf := frameBufferPool.Get().([]byte)
+	if cap(buf) < int(size) {
+		buf = make([]byte, size)
+	} else {
+		buf = buf[:size]
 	}
-
-	return make([]byte, size)
+	return buf
 }
 
 func (cc *ClientConn) putFrameScratchBuffer(buf []byte) {
-	buf = buf[:0]
-	cc.framePool.Put(buf)
+	frameBufferPool.Put(buf)
 }
 
 // errRequestCanceled is a copy of net/http's errRequestCanceled because it's not
